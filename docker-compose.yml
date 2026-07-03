@@ -1,0 +1,24 @@
+services:
+  llm-failover:
+    build: .
+    container_name: llm-failover-proxy
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      # 配置（只读，改 config.yaml 后 docker compose restart 生效）
+      - ./config.yaml:/app/config.yaml:ro
+      # 日志（持久化到宿主机，Docker Desktop 重启不丢）
+      - "C:/Users/Administrator/.jiuwenswarm/provider-switch-log:/app/logs"
+      # 代码热更新（开发时取消注释，改代码后即时生效无需 rebuild）
+      # - ./app:/app/app:ro
+    environment:
+      - PROXY_CONFIG=/app/config.yaml
+      - PROXY_LOG_DIR=/app/logs
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,72 @@
+# ============================================================
+# LLM Failover Proxy — 配置（示例模板）
+# 使用前请将 api_key 替换为真实的 key
+# ============================================================
+#
+# 【Jiuwen 配置参考】
+# 在 Jiuwen config.yaml models.defaults 中填写：
+#
+#   model_client_config:
+#     api_base: http://localhost:8000/v1    ← 指向本代理
+#     api_key: default                      ← 代理不验证 key
+#     model_name: local_route               ← 代理通过 model_map 映射到真实模型
+#     client_provider: OpenAI
+#
+# 如果 Jiuwen 和代理不在同一台机器，把 localhost 换成代理所在机器的 IP。
+# ============================================================
+
+host: "0.0.0.0"
+port: 8000
+log_level: info
+
+# ── 熔断器配置 ──────────────────────────────────────────────
+circuit_breaker:
+  enabled: true
+  failure_threshold: 3          # 连续失败 N 次后降级
+  recovery_interval_seconds: 60 # 每 N 秒尝试恢复降级的 provider
+  probe_path: "/v1/models"      # 探测请求路径（轻量，不消耗 token）
+
+# ── 软触发阈值（思考模式兼容） ────────────────────────────
+soft_trigger:
+  enabled: true
+  ttft_threshold_ms: 60000       # 首 chunk 等待 >60s 触发（思考模式首 token 可能延迟）
+  tpot_threshold_ms: 10000        # 每 token 生成 >10s 触发（思考→内容过渡间隙）
+  throughput_threshold_tokens_per_sec: 3   # 吞吐 <3 t/s 持续触发（推理稀疏期容忍）
+  throughput_window_seconds: 20.0          # 20s 后开始检查吞吐（给思考模式留足时间）
+
+providers:
+  # ── 0. DeepSeek 官方（主用） ──────────────────────────────
+  - name: deepseek
+    priority: 0
+    api_base: "https://api.deepseek.com"
+    api_key: "sk-your-deepseek-api-key-here"
+    timeout: 180
+    model_map:
+      local_route: "deepseek-v4-flash"
+
+  # ── 1. Volcengine Ark（备用） ─────────────────────────────
+  - name: volcengine
+    priority: 1
+    api_base: "https://ark.cn-beijing.volces.com/api/v3"
+    api_key: "ark-your-volcengine-api-key-here"
+    timeout: 180
+    model_map:
+      local_route: "deepseek-v4-flash-260425"
+
+  # ── 2. GLM-5（兜底） ──────────────────────────────────────
+  - name: glm-5
+    priority: 2
+    api_base: "https://open.bigmodel.cn/api/paas/v4"
+    api_key: "your-glm-api-key-here"
+    timeout: 120
+    model_map:
+      local_route: "glm-5.2"
+
+  # ── 3. GLM-4.7（最终兜底） ────────────────────────────────
+  - name: glm-4.7
+    priority: 3
+    api_base: "https://open.bigmodel.cn/api/paas/v4"
+    api_key: "your-glm-api-key-here"
+    timeout: 120
+    model_map:
+      local_route: "glm-4.7"
