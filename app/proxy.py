@@ -11,6 +11,7 @@ import httpx
 
 from app.config import ProviderConfig, ProxyConfig
 from app.circuit_breaker import CircuitBreaker
+from app.result_store import ResultStore
 from app.converter import (
     openai_to_anthropic_request,
     anthropic_to_openai_response,
@@ -221,6 +222,23 @@ class SlidingMetrics:
         }
 
 
+def _has_tool_call(raw_chunk: bytes) -> bool:
+    """检测 SSE chunk 中是否包含 tool_call 指令"""
+    try:
+        text = raw_chunk.decode("utf-8", errors="replace").strip()
+        if not text.startswith("data: ") or text == "data: [DONE]":
+            return False
+        data = json.loads(text[6:])
+        choices = data.get("choices", [])
+        if choices and isinstance(choices, list):
+            delta = choices[0].get("delta", {})
+            if delta.get("tool_calls"):
+                return True
+    except (json.JSONDecodeError, IndexError, TypeError):
+        pass
+    return False
+
+
 # ── Main proxy ──────────────────────────────────────────────────────────
 
 class FailoverProxy:
@@ -233,6 +251,8 @@ class FailoverProxy:
             failure_threshold=config.circuit_breaker.failure_threshold,
             recovery_interval=config.circuit_breaker.recovery_interval_seconds,
         )
+        # A2: persistent result store for frontend recovery
+        self._result_store = ResultStore()
         # register all providers
         for p in config.sorted_providers:
             self._cb.register(p.name)
@@ -312,8 +332,9 @@ class FailoverProxy:
         # Tune these constants for your workload:
         #   Smaller → more frequent flushes → less CPU starvation risk
         #   Larger  → fewer round-trips → higher throughput
-        FLUSH_CHUNKS = 50
-        FLUSH_BYTES = 48 * 1024  # 48 KB
+        # P0: 密集工具调用会话优化 - 减少 agent loop 迭代约 75%
+        FLUSH_CHUNKS = 200
+        FLUSH_BYTES = 192 * 1024  # 192 KB
 
         last_error: Optional[Exception] = None
         providers_tried: list[str] = []
@@ -330,6 +351,9 @@ class FailoverProxy:
                 chunks_this_provider = 0
                 total_bytes = 0
 
+                # A2: accumulate full response text for result store
+                full_response: list[str] = []
+
                 async for raw_chunk in self._try_chat_stream(provider, body):
                     # SSE keepalive comment — flush current batch immediately,
                     # then yield the keepalive directly to keep proxy→Jiuwen
@@ -345,7 +369,39 @@ class FailoverProxy:
                         await asyncio.sleep(0)
                         continue
 
+                    # A2: extract content from raw SSE chunk for accumulation
+                    try:
+                        chunk_str = raw_chunk.decode("utf-8", errors="replace").strip()
+                        if chunk_str.startswith("data: ") and chunk_str != "data: [DONE]":
+                            _data = json.loads(chunk_str[6:])
+                            _choices = _data.get("choices", [])
+                            if _choices and isinstance(_choices, list):
+                                _delta = _choices[0].get("delta", {})
+                                _content = _delta.get("content", "") or ""
+                                if _content:
+                                    full_response.append(_content)
+                    except (json.JSONDecodeError, IndexError):
+                        pass
+
                     rewritten = _rewrite_sse_chunk(raw_chunk, proxy_id, proxy_model)
+
+                    # ── Tool_call 即时通道 ──────────────────────────────
+                    # 同类工具并行到达时不等待 content batch 积满，
+                    # 立即 flush 当前 content + 直接 yield tool_call chunk。
+                    if _has_tool_call(raw_chunk):
+                        if batch:
+                            for chunk in batch:
+                                yield chunk
+                            await asyncio.sleep(0)
+                            batch.clear()
+                            batch_bytes = 0
+                        yield rewritten
+                        await asyncio.sleep(0)
+                        chunks_this_provider += 1
+                        total_bytes += len(rewritten)
+                        continue
+
+                    # ── Content chunk → 积攒大 batch ─────────────────────
                     batch.append(rewritten)
                     batch_bytes += len(rewritten)
                     total_bytes += len(rewritten)
@@ -369,9 +425,18 @@ class FailoverProxy:
 
                 # stream finished normally
                 self._cb.record_success(provider.name)
+                # A2: save full response to result store
+                full_text = "".join(full_response)
+                if full_text:
+                    self._result_store.save(
+                        session_id=body.get("session_id", "unknown"),
+                        req_id=proxy_id,
+                        model=proxy_model,
+                        content=full_text,
+                    )
                 logger.info(
-                    "[Switch] 流完成 provider=%s (%d chunks, %d bytes) cb=%s",
-                    provider.name, chunks_this_provider, total_bytes,
+                    "[Switch] 流完成 provider=%s (%d chunks, %d bytes, %d chars saved) cb=%s",
+                    provider.name, chunks_this_provider, total_bytes, len(full_text),
                     self._cb.summary(),
                 )
                 return

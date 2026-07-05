@@ -31,16 +31,18 @@ D:\JiuwenSwarm\proxy\
 ├── requirements.txt            # 依赖：fastapi, uvicorn, httpx, pyyaml
 ├── docker-compose.yml          # Docker 部署（主用启动方式）
 ├── Dockerfile                  # Python 3.12-slim
-├── design.md                   # 本文档
+├── design.md                   # 本文档（provider 切换设计）
+├── jiuwen-interruption-report.md  # Jiuwen 对话静默中断问题汇总
 └── app/
     ├── main.py                 # FastAPI 入口 + 后台恢复探测
     ├── config.py               # 配置加载（支持 ${ENV_VAR}）
     ├── proxy.py                # failover 核心：熔断器 + 软触发 + SSE 重写 + 心跳
+    ├── result_store.py         # LLM 响应结果 SQLite 存储（见中断报告）
     ├── converter.py            # OpenAI ↔ Anthropic 协议转换（已弃用）
     ├── circuit_breaker.py      # 熔断器：状态跟踪、降级、自动恢复
     └── logger.py               # 日志（stdout + 文件轮转）
 
-日志输出：C:\Users\Administrator\.jiuwenswarm\provider-switch-log\proxy.log（volume 挂载）
+日志输出：~/.jiuwenswarm\provider-switch-log\proxy.log（volume 挂载）
 ```
 
 ### 启动方式（主用 Docker）
@@ -157,7 +159,7 @@ Jiuwen 全程看到同一个 `proxy_xxx` ID 和 `local_route` 模型名，感知
 
 ### 日志文件
 
-`C:\Users\Administrator\.jiuwenswarm\provider-switch-log\proxy.log`，自动轮转（10MB × 5 份）。
+`~/.jiuwenswarm\provider-switch-log\proxy.log`，自动轮转（10MB × 5 份）。
 
 ### 关键日志标签
 
@@ -299,6 +301,8 @@ models:
 | v7.3 | 移除 deepseek-anthropic，兼容思考模式 | ✅ 2026-07-04 |
 | v7.4 | SlidingMetrics 窗口可配置（弃用硬编码 5s） | ✅ 2026-07-04 |
 
+| v7.5-v7.10 | **Jiuwen 对话静默中断解决方案**（A2/A3/B1/B4/S1/S2/Light S3） | 详见 `jiuwen-interruption-report.md` |
+
 ---
 
 ## 十一、生产验证数据
@@ -345,7 +349,7 @@ DeepSeek 全天稳定，切换 0 次。
 
 ## 十三、Jiuwen 侧上下文压缩器配置（1M 窗口扩容）
 
-**文件**：`C:\Users\Administrator\.jiuwenswarm\config\config.yaml` → `react.context_engine_config`
+**文件**：`~/.jiuwenswarm\config\config.yaml` → `react.context_engine_config`
 
 **目标**：适配 DeepSeek v4 Flash 1M 上下文窗口，提升长任务输出质量。
 
@@ -354,6 +358,21 @@ DeepSeek 全天稳定，切换 0 次。
 | `message_summary_offloader` | messages_threshold / summary_max_tokens | 120 条 / 40K 字符 | 保留 80 条 / 3K token 摘要 |
 | `dialogue_compressor` | tokens_threshold / compression_target | 700K（70%） | 100K |
 | `current_round_compressor` | tokens_threshold / compression_target | 650K（65%） | 80K |
-| `round_level_compressor` | tokens_threshold / target_total | 750K（75%） | 400K（释放 350K） |
+| `round_level_compressor` | tokens_threshold / target_total / **offload_writeback_enabled=true** | 750K（75%） | 400K（释放 350K） |
 
 效果：单会话 242 轮 / 4.35M 原始累计 token 运行正常，每轮实际 API payload 保持 ~90K。
+
+---
+
+## 十四、Jiuwen 对话静默中断
+
+本文档专注于 LLM Failover Proxy 的 provider 切换设计。Jiuwen 前-后端对话静默中断问题（含根因分析、A2/A3/B1/B4/S1/S2/Light S3 方案细节与覆盖率评估）已分离到独立文档：
+
+➡️ **`jiuwen-interruption-report.md`**
+
+包含内容：
+- 13 类中断场景矩阵与根因分类
+- 7 项实施方案（含已实施的 JS patch 代码）
+- A2 Proxy 结果缓存（`result_store.py` + `/results/consume` 端点）
+- 综合覆盖率评估（~90%）与剩余缺口
+- 典型案例 `req_mr6e8b7m_512` 数据

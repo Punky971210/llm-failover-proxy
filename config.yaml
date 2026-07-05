@@ -1,6 +1,6 @@
 # ============================================================
-# LLM Failover Proxy — 配置（示例模板）
-# 使用前请将 api_key 替换为真实的 key
+# LLM Failover Proxy — 配置
+# 按 priority 升序依次尝试，失败自动切下一个
 # ============================================================
 #
 # 【Jiuwen 配置参考】
@@ -14,6 +14,12 @@
 #
 # 如果 Jiuwen 和代理不在同一台机器，把 localhost 换成代理所在机器的 IP。
 # ============================================================
+#
+# 使用前请通过环境变量设置 API Key，或直接编辑下方 api_key 字段。
+# 支持的环境变量：
+#   DEEPSEEK_API_KEY   — DeepSeek 官方 API Key
+#   VOLC_API_KEY       — Volcengine Ark API Key
+#   GLM_API_KEY        — 智谱 GLM API Key
 
 host: "0.0.0.0"
 port: 8000
@@ -39,7 +45,7 @@ providers:
   - name: deepseek
     priority: 0
     api_base: "https://api.deepseek.com"
-    api_key: "sk-your-deepseek-api-key-here"
+    api_key: "${DEEPSEEK_API_KEY}"
     timeout: 180
     model_map:
       local_route: "deepseek-v4-flash"
@@ -48,7 +54,7 @@ providers:
   - name: volcengine
     priority: 1
     api_base: "https://ark.cn-beijing.volces.com/api/v3"
-    api_key: "ark-your-volcengine-api-key-here"
+    api_key: "${VOLC_API_KEY}"
     timeout: 180
     model_map:
       local_route: "deepseek-v4-flash-260425"
@@ -57,7 +63,7 @@ providers:
   - name: glm-5
     priority: 2
     api_base: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "your-glm-api-key-here"
+    api_key: "${GLM_API_KEY}"
     timeout: 120
     model_map:
       local_route: "glm-5.2"
@@ -66,7 +72,7 @@ providers:
   - name: glm-4.7
     priority: 3
     api_base: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "your-glm-api-key-here"
+    api_key: "${GLM_API_KEY}"
     timeout: 120
     model_map:
       local_route: "glm-4.7"

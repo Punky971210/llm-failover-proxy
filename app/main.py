@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from app.config import load_config, ProxyConfig
 from app.logger import setup_logger
@@ -143,6 +144,29 @@ async def list_models():
                 seen.add(incoming)
                 models.append({"id": incoming, "object": "model", "created": 0, "owned_by": p.name})
     return {"object": "list", "data": models}
+
+
+# ── A2: result store endpoints ──────────────────────────────────
+
+
+class ConsumeBody(BaseModel):
+    ids: list[int] = []
+
+
+@app.get("/results/{session_id}")
+async def get_results(session_id: str):
+    """Return unconsumed LLM results for a session. Used by frontend after WS reconnect."""
+    if not _proxy or not hasattr(_proxy, "_result_store"):
+        return {"results": []}
+    return {"results": _proxy._result_store.get_unconsumed(session_id)}
+
+
+@app.post("/results/consume")
+async def consume_results(body: ConsumeBody):
+    """Mark result records as consumed (frontend has processed them)."""
+    if _proxy and hasattr(_proxy, "_result_store"):
+        _proxy._result_store.mark_consumed(body.ids)
+    return {"ok": True}
 
 
 @app.post("/v1/chat/completions")
