@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Failover Proxy — 管理面板</title>
+<link rel="stylesheet" href="/admin/static/admin.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- 侧边栏 -->
+  <nav id="sidebar">
+    <div class="sidebar-header">
+      <h1>LLM Proxy</h1>
+      <span class="version">v0.1.0</span>
+    </div>
+    <ul class="nav-list">
+      <li class="nav-item active" data-page="dashboard">
+        <span class="nav-icon">&#9660;</span> 仪表盘
+      </li>
+      <li class="nav-item" data-page="providers">
+        <span class="nav-icon">&#9881;</span> Provider
+      </li>
+      <li class="nav-item" data-page="monitor">
+        <span class="nav-icon">&#9673;</span> 实时监控
+      </li>
+      <li class="nav-item" data-page="stats">
+        <span class="nav-icon">&#9635;</span> 用量统计
+      </li>
+      <li class="nav-item" data-page="test">
+        <span class="nav-icon">&#9654;</span> 模型测试
+      </li>
+      <li class="nav-item" data-page="security">
+        <span class="nav-icon">&#10004;</span> 安全
+      </li>
+      <li class="nav-item" data-page="config">
+        <span class="nav-icon">&#9998;</span> 配置
+      </li>
+    </ul>
+    <div class="sidebar-footer">
+      <div id="proxy-status" class="status-badge ok">运行中</div>
+    </div>
+  </nav>
+
+  <!-- 主内容区 -->
+  <main id="main-content">
+
+    <!-- ═══ 仪表盘 ═══ -->
+    <section id="page-dashboard" class="page active">
+      <div class="page-header">
+        <h2>仪表盘</h2>
+        <div class="header-actions">
+          <button class="btn btn-sm" onclick="refreshDashboard()">&#8635; 刷新</button>
+        </div>
+      </div>
+      <div class="metric-grid" id="dashboard-metrics">
+        <div class="metric-card"><div class="metric-value" id="metric-requests">-</div><div class="metric-label">24h 总请求</div></div>
+        <div class="metric-card"><div class="metric-value" id="metric-switches">-</div><div class="metric-label">24h 切换次数</div></div>
+        <div class="metric-card"><div class="metric-value" id="metric-providers">-</div><div class="metric-label">Provider</div></div>
+        <div class="metric-card"><div class="metric-value" id="metric-uptime">-</div><div class="metric-label">运行时长</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Provider 熔断器状态</div>
+        <div id="cb-status-list" class="cb-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">软触发阈值配置</div>
+        <div id="soft-trigger-info" class="param-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">最近切换事件</div>
+        <div id="recent-switches" class="table-wrap"><p class="muted">加载中...</p></div>
+      </div>
+    </section>
+
+    <!-- ═══ Provider ═══ -->
+    <section id="page-providers" class="page">
+      <div class="page-header">
+        <h2>Provider 管理</h2>
+        <div class="header-actions">
+          <button class="btn btn-sm" onclick="refreshProviders()">&#8635; 刷新</button>
+          <button class="btn btn-sm btn-primary" onclick="saveProviderOrder()" id="btn-save-order" disabled>&#10003; 保存排序</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">拖拽调整优先级</div>
+        <p class="muted">拖拽 Provider 调整 failover 顺序，调整后点击"保存排序"即实时生效（不写入配置文件，重启后恢复）。</p>
+        <div id="provider-list" class="provider-grid"></div>
+      </div>
+    </section>
+
+    <!-- ═══ 实时监控 ═══ -->
+    <section id="page-monitor" class="page">
+      <div class="page-header">
+        <h2>实时监控</h2>
+        <div class="header-actions">
+          <span id="sse-status" class="status-badge warn">未连接</span>
+          <button class="btn btn-sm" onclick="connectSSE()">&#8635; 重连</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Provider 实时状态</div>
+        <div id="monitor-providers" class="provider-grid"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">实时事件流</div>
+        <div id="event-log" class="log-box"><p class="muted">等待连接...</p></div>
+      </div>
+    </section>
+
+    <!-- ═══ 用量统计 ═══ -->
+    <section id="page-stats" class="page">
+      <div class="page-header">
+        <h2>用量统计</h2>
+        <div class="header-actions">
+          <select id="stats-range" class="form-select" onchange="refreshStats()">
+            <option value="24">最近 24 小时</option>
+            <option value="168" selected>最近 7 天</option>
+            <option value="720">最近 30 天</option>
+          </select>
+          <button class="btn btn-sm" onclick="refreshStats()">&#8635; 刷新</button>
+        </div>
+      </div>
+      <div class="metric-grid" id="stats-metrics">
+        <div class="metric-card"><div class="metric-value" id="stat-requests">-</div><div class="metric-label">总请求</div></div>
+        <div class="metric-card"><div class="metric-value" id="stat-tokens">-</div><div class="metric-label">总 Token</div></div>
+        <div class="metric-card"><div class="metric-value" id="stat-avg-ms">-</div><div class="metric-label">平均耗时</div></div>
+        <div class="metric-card"><div class="metric-value" id="stat-switches">-</div><div class="metric-label">切换次数</div></div>
+      </div>
+      <div class="card"><div class="card-title">请求量趋势</div><canvas id="trend-chart" width="600" height="200"></canvas></div>
+      <div class="card"><div class="card-title">Provider 用量分布</div><canvas id="provider-chart" width="400" height="200"></canvas></div>
+      <div class="card"><div class="card-title">Provider 详情</div><div id="provider-detail-table" class="table-wrap"></div></div>
+      <div class="card"><div class="card-title">切换事件</div><div id="switch-event-table" class="table-wrap"></div></div>
+    </section>
+
+    <!-- ═══ 模型测试 ═══ -->
+    <section id="page-test" class="page">
+      <div class="page-header">
+        <h2>模型测试</h2>
+      </div>
+      <div class="card">
+        <div class="test-controls">
+          <div class="form-group">
+            <label>目标 Provider</label>
+            <select id="test-provider" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>最大 Token</label>
+            <input id="test-max-tokens" type="number" class="form-input" value="1024" style="width:100px">
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="test-stream" checked> 流式
+            </label>
+          </div>
+          <div class="form-group">
+            <button class="btn btn-primary" onclick="runTest()">&#9654; 发送</button>
+            <button class="btn btn-sm" onclick="stopTest()" id="btn-stop-test" disabled>&#9632; 停止</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Prompt</label>
+          <textarea id="test-prompt" class="form-textarea" rows="4" placeholder="输入测试 prompt...">用中文回答：请简述量子计算和经典计算的核心区别。</textarea>
+        </div>
+        <div id="test-metrics" class="metric-grid" style="margin-top:12px">
+          <div class="metric-card small"><span class="metric-value" id="test-ttft">-</span><span class="metric-label">TTFT</span></div>
+          <div class="metric-card small"><span class="metric-value" id="test-total">-</span><span class="metric-label">总耗时</span></div>
+          <div class="metric-card small"><span class="metric-value" id="test-chars">-</span><span class="metric-label">输出字符</span></div>
+        </div>
+        <div class="form-group">
+          <label>响应</label>
+          <div id="test-response" class="response-box"><p class="muted">发送请求后将在此显示响应。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ 安全 ═══ -->
+    <section id="page-security" class="page">
+      <div class="page-header">
+        <h2>安全自检</h2>
+        <button class="btn btn-sm" onclick="refreshSecurity()">&#8635; 重新检测</button>
+      </div>
+      <div class="card">
+        <div class="card-title">整体安全评级 <span id="security-overall" class="status-badge">检测中...</span></div>
+      </div>
+      <div id="security-checks" class="check-list"></div>
+    </section>
+
+    <!-- ═══ 配置 ═══ -->
+    <section id="page-config" class="page">
+      <div class="page-header">
+        <h2>配置</h2>
+        <button class="btn btn-sm" onclick="refreshConfig()">&#8635; 刷新</button>
+      </div>
+      <div class="card">
+        <div class="card-title">Provider 配置</div>
+        <div id="config-providers" class="provider-grid"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">运行时参数</div>
+        <pre id="config-raw" class="config-json"></pre>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="/admin/static/admin.js"></script>
+</body>
+</html>

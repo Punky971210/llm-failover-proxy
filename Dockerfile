@@ -8,6 +8,7 @@ ENV TZ=Asia/Shanghai
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+ARG APP_SRC_HASH
 COPY app/ ./app/
 COPY config.yaml .
 

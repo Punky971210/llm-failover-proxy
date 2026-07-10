@@ -12,6 +12,7 @@ import httpx
 from app.config import ProviderConfig, ProxyConfig
 from app.circuit_breaker import CircuitBreaker
 from app.result_store import ResultStore
+from app.admin_api import broadcast_event
 from app.converter import (
     openai_to_anthropic_request,
     anthropic_to_openai_response,
@@ -266,6 +267,7 @@ class FailoverProxy:
         """Non-streaming chat completions with failover + circuit breaker + model rewrite."""
         last_error: Optional[Exception] = None
         providers_tried: list[str] = []
+        _t0 = time.monotonic()
 
         for provider in self._config.sorted_providers:
             if self._cb.is_degraded(provider.name):
@@ -278,6 +280,19 @@ class FailoverProxy:
                 # rewrite model to proxy model name
                 if "model" in result:
                     result["model"] = body.get("model", "local_route")
+                # P0: 记录用量统计
+                elapsed_ms = int((time.monotonic() - _t0) * 1000)
+                usage = result.get("usage", {})
+                self._result_store.log_request(
+                    provider=provider.name,
+                    model=body.get("model", "local_route"),
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    duration_ms=elapsed_ms,
+                )
+                broadcast_event("provider_status", {
+                    "providers": _cb_snapshot(self._cb),
+                })
                 logger.info(
                     "[Switch] 完成 provider=%s cb=%s",
                     provider.name, self._cb.summary(),
@@ -286,6 +301,16 @@ class FailoverProxy:
             except ProviderFailed as exc:
                 deg = self._cb.record_failure(provider.name)
                 self._cb.mark_switched_away(provider.name)
+                self._result_store.log_switch(
+                    from_provider=provider.name,
+                    trigger_type="hard",
+                    reason=exc.reason,
+                )
+                broadcast_event("switch", {
+                    "from_provider": provider.name,
+                    "trigger_type": "hard",
+                    "reason": exc.reason,
+                })
                 logger.warning(
                     "[Switch] 切换 provider=%s -> next reason=\"%s\" degraded=%s cb=%s",
                     exc.provider_name, exc.reason, deg, self._cb.summary(),
@@ -295,6 +320,16 @@ class FailoverProxy:
             except SoftTriggerSwitch as exc:
                 deg = self._cb.record_failure(provider.name)
                 self._cb.mark_switched_away(provider.name)
+                self._result_store.log_switch(
+                    from_provider=provider.name,
+                    trigger_type="soft",
+                    reason=exc.reason,
+                )
+                broadcast_event("switch", {
+                    "from_provider": provider.name,
+                    "trigger_type": "soft",
+                    "reason": exc.reason,
+                })
                 logger.warning(
                     "[Switch] 软触发切换 provider=%s -> next reason=\"%s\" metrics=%s degraded=%s cb=%s",
                     exc.provider_name, exc.reason, exc.metrics, deg, self._cb.summary(),
@@ -328,6 +363,7 @@ class FailoverProxy:
         """
         proxy_id = f"proxy_{int(time.time() * 1000)}_{id(body)}"
         proxy_model = body.get("model", "local_route")
+        _t0 = time.monotonic()
 
         # Tune these constants for your workload:
         #   Smaller → more frequent flushes → less CPU starvation risk
@@ -425,6 +461,16 @@ class FailoverProxy:
 
                 # stream finished normally
                 self._cb.record_success(provider.name)
+                # P0: 统计 + 广播
+                elapsed_ms = int((time.monotonic() - _t0) * 1000)
+                self._result_store.log_request(
+                    provider=provider.name,
+                    model=proxy_model,
+                    duration_ms=elapsed_ms,
+                )
+                broadcast_event("provider_status", {
+                    "providers": _cb_snapshot(self._cb),
+                })
                 # A2: save full response to result store
                 full_text = "".join(full_response)
                 if full_text:
@@ -444,6 +490,19 @@ class FailoverProxy:
             except (ProviderFailed, SoftTriggerSwitch) as exc:
                 self._cb.record_failure(provider.name)
                 self._cb.mark_switched_away(provider.name)
+
+                # P0: 记录切换事件 + 广播
+                trigger_type = "soft" if isinstance(exc, SoftTriggerSwitch) else "hard"
+                self._result_store.log_switch(
+                    from_provider=provider.name,
+                    trigger_type=trigger_type,
+                    reason=exc.reason,
+                )
+                broadcast_event("switch", {
+                    "from_provider": provider.name,
+                    "trigger_type": trigger_type,
+                    "reason": exc.reason,
+                })
 
                 if isinstance(exc, SoftTriggerSwitch):
                     logger.warning(
@@ -775,3 +834,65 @@ class FailoverProxy:
             if _is_retryable(exc):
                 raise ProviderFailed(provider.name, f"{type(exc).__name__}: {exc}") from exc
             raise ProviderFailed(provider.name, f"{type(exc).__name__}: {exc}") from exc
+
+
+# ── 方案 C: 启发式难度估计 ────────────────────────────────────────
+
+# 常见高难度关键词
+_HIGH_DIFFICULTY_KEYWORDS = [
+    "如何", "为什么", "分析", "比较", "解释", "总结", "推导",
+    "how", "why", "analyze", "compare", "explain", "summarize", "derive",
+    "根因", "原理", "机制", "影响", "关系", "区别", "优缺点",
+]
+
+
+def heuristic_difficulty(prompt: str) -> dict:
+    """无模型 forward pass 的启发式难度估计。
+
+    用于方案 C 快速路由决策。proxy 侧无需 GPU，根据 prompt 文本特征
+    估算难度分数，供客户端（Jiuwen）或 proxy 内部路由参考。
+
+    Returns:
+        dict: {difficulty, len_term, kw_factor, struct_factor, special_factor}
+    """
+    # 长度因子 — 长文本通常更复杂
+    len_term = min(len(prompt) / 500.0, 1.0)
+
+    # 句子结构因子 — 长句多说明逻辑链条长
+    sentences = [s for s in re.split(r'[.!?。！？\n]+', prompt) if s.strip()]
+    avg_sentence_len = sum(len(s) for s in sentences) / max(len(sentences), 1)
+    struct_factor = min(avg_sentence_len / 200.0, 1.0)
+
+    # 关键词因子 — 高难度关键词命中率
+    prompt_lower = prompt.lower()
+    kw_hits = sum(1 for kw in _HIGH_DIFFICULTY_KEYWORDS if kw in prompt_lower)
+    kw_factor = min(kw_hits / 4.0, 1.0)
+
+    # 代码/数学块因子 — 含代码块或数学表达通常难度更高
+    has_code_block = bool(re.search(r'```|def |class |function |import ', prompt))
+    has_math = bool(re.search(r'[+\-*/=<>≤≥≠±∑∫√∂Δλ]', prompt))
+    special_factor = 0.3 if has_code_block or has_math else 0.0
+
+    difficulty = 0.30 * len_term + 0.15 * struct_factor + 0.35 * kw_factor + 0.20 * special_factor
+    difficulty = max(0.0, min(difficulty, 1.0))
+
+    return {
+        "difficulty": round(difficulty, 3),
+        "len_term": round(len_term, 3),
+        "kw_factor": round(kw_factor, 3),
+        "struct_factor": round(struct_factor, 3),
+        "special_factor": round(special_factor, 3),
+    }
+
+
+def _cb_snapshot(cb: CircuitBreaker) -> list[dict]:
+    """Snapshot CB states for SSE provider_status broadcast."""
+    return [
+        {
+            "name": name,
+            "degraded": state.degraded,
+            "failures": state.failure_count,
+            "switches": state.total_switches_away,
+        }
+        for name, state in cb._states.items()
+    ]

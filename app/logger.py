@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-LOG_DIR = Path(os.environ.get("PROXY_LOG_DIR", "./logs"))
+LOG_DIR = Path(os.environ.get("PROXY_LOG_DIR", "C:/Users/Administrator/.jiuwenswarm/provider-switch-log"))
 
 
 def setup_logger(name: str = "llm-failover") -> logging.Logger:

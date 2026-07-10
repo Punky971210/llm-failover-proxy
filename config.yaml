@@ -14,16 +14,11 @@
 #
 # 如果 Jiuwen 和代理不在同一台机器，把 localhost 换成代理所在机器的 IP。
 # ============================================================
-#
-# 使用前请通过环境变量设置 API Key，或直接编辑下方 api_key 字段。
-# 支持的环境变量：
-#   DEEPSEEK_API_KEY   — DeepSeek 官方 API Key
-#   VOLC_API_KEY       — Volcengine Ark API Key
-#   GLM_API_KEY        — 智谱 GLM API Key
 
 host: "0.0.0.0"
 port: 8000
 log_level: info
+admin_key: "${PROXY_ADMIN_KEY:-admin123}"  # 管理面板认证（留空=不认证，建议修改；环境变量 PROXY_ADMIN_KEY 可覆盖）
 
 # ── 熔断器配置 ──────────────────────────────────────────────
 circuit_breaker:
@@ -41,38 +36,19 @@ soft_trigger:
   throughput_window_seconds: 20.0          # 20s 后开始检查吞吐（给思考模式留足时间）
 
 providers:
-  # ── 0. DeepSeek 官方（主用） ──────────────────────────────
-  - name: deepseek
+  # ── Provider 示例，替换为你自己的 API Key ─────────────────
+  - name: example-provider-0
     priority: 0
-    api_base: "https://api.deepseek.com"
-    api_key: "${DEEPSEEK_API_KEY}"
+    api_base: "https://api.example.com/v1"
+    api_key: "${API_KEY_0}"     # 替换为你的 API Key
     timeout: 180
     model_map:
-      local_route: "deepseek-v4-flash"
+      local_route: "your-model-0"
 
-  # ── 1. Volcengine Ark（备用） ─────────────────────────────
-  - name: volcengine
+  - name: example-provider-1
     priority: 1
-    api_base: "https://ark.cn-beijing.volces.com/api/v3"
-    api_key: "${VOLC_API_KEY}"
-    timeout: 180
-    model_map:
-      local_route: "deepseek-v4-flash-260425"
-
-  # ── 2. GLM-5（兜底） ──────────────────────────────────────
-  - name: glm-5
-    priority: 2
-    api_base: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "${GLM_API_KEY}"
+    api_base: "https://api.example.com/v1"
+    api_key: "${API_KEY_1}"     # 替换为你的 API Key
     timeout: 120
     model_map:
-      local_route: "glm-5.2"
-
-  # ── 3. GLM-4.7（最终兜底） ────────────────────────────────
-  - name: glm-4.7
-    priority: 3
-    api_base: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "${GLM_API_KEY}"
-    timeout: 120
-    model_map:
-      local_route: "glm-4.7"
+      local_route: "your-model-1"

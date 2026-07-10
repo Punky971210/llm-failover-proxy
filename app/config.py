@@ -69,6 +69,7 @@ class ProxyConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "info"
+    admin_key: str = ""  # 管理面板认证（空=不认证）
     providers: list[ProviderConfig] = Field(default_factory=list)
     upstream_api_key_header: str = "Authorization"
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
@@ -105,4 +106,9 @@ def load_config(path: str | Path) -> ProxyConfig:
         return value
 
     raw = _subst(raw)
-    return ProxyConfig(**raw)
+    config = ProxyConfig(**raw)
+    # 环境变量覆盖 admin_key（优先级最高）
+    # 用于 deploy_local.bat 本地部署关闭面板认证
+    if "PROXY_ADMIN_KEY" in os.environ:
+        config.admin_key = os.environ["PROXY_ADMIN_KEY"]
+    return config

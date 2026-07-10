@@ -1,0 +1,26 @@
+host: "0.0.0.0"
+port: 8000
+log_level: info
+admin_key: "admin123"
+
+circuit_breaker:
+  enabled: true
+  failure_threshold: 3
+  recovery_interval_seconds: 60
+  probe_path: "/v1/models"
+
+soft_trigger:
+  enabled: true
+  ttft_threshold_ms: 60000
+  tpot_threshold_ms: 10000
+  throughput_threshold_tokens_per_sec: 3
+  throughput_window_seconds: 20.0
+
+providers:
+  - name: example-provider
+    priority: 0
+    api_base: "https://api.example.com"
+    api_key: "sk-your-key-here"
+    timeout: 180
+    model_map:
+      local_route: "your-model-name"
