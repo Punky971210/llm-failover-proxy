@@ -487,11 +487,18 @@ async def get_config(request: Request):
 # ═══════════════════════════════════════════════════════════════════════
 
 _event_subscribers: list[asyncio.Queue] = []
+_event_history: list[str] = []          # circular buffer for reconnect replay
+_EVENT_HISTORY_MAX = 200                # max historical events to retain
 
 
 def broadcast_event(event_type: str, data: dict) -> None:
     """Broadcast an event to all SSE subscribers. Called by proxy.py."""
-    payload = json.dumps({"type": event_type, **data})
+    payload = json.dumps({"type": event_type, "created_at": time.time(), **data})
+    # Push to history (ring buffer)
+    _event_history.append(payload)
+    if len(_event_history) > _EVENT_HISTORY_MAX:
+        _event_history[:] = _event_history[-_EVENT_HISTORY_MAX:]
+    # Push to live subscribers
     stale = []
     for q in _event_subscribers:
         try:
@@ -515,6 +522,10 @@ async def event_stream(request: Request, token: str = ""):
     else:
         _verify_admin(request)
     async def _event_generator():
+        # Replay event history so reconnect sees recent activity
+        for history_payload in _event_history:
+            yield f"data: {history_payload}\n\n"
+        # Live events
         queue: asyncio.Queue = asyncio.Queue(maxsize=256)
         _event_subscribers.append(queue)
         try:

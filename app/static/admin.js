@@ -350,7 +350,7 @@ function connectSSE() {
   sse.onopen = async () => {
     statusEl.textContent = "已连接";
     statusEl.className = "status-badge ok";
-    $("event-log").innerHTML = '<p class="muted">等待事件...</p>';
+    $("event-log").innerHTML = '';  // 清空，历史事件会自动回放填充
     // 拉取初始状态填充 Provider 面板（避免空面板）
     try {
       const dash = await fetchAPI("/admin/dashboard");
@@ -389,7 +389,8 @@ function connectSSE() {
 function handleSSEEvent(data) {
   // 追加到事件日志
   const log = $("event-log");
-  const time = new Date().toLocaleTimeString("zh-CN");
+  // 优先使用事件自带的 created_at 时间戳（历史回放时准确），否则使用当前时间
+  const ts = data.created_at ? fmtTime(data.created_at) : new Date().toLocaleTimeString("zh-CN");
 
   const typeMap = {
     switch: "log-switch",
@@ -401,8 +402,13 @@ function handleSSEEvent(data) {
 
   const entry = document.createElement("div");
   entry.className = `log-entry ${cls}`;
-  entry.innerHTML = `<span class="log-time">[${time}]</span> [${data.type}] ${JSON.stringify(data)}`;
+  entry.innerHTML = `<span class="log-time">[${ts}]</span> [${data.type}] ${JSON.stringify(data)}`;
   log.appendChild(entry);
+
+  // 限制日志条目上限（防 DOM 无限增长）
+  while (log.children.length > 500) {
+    log.removeChild(log.firstChild);
+  }
 
   // 自动滚动
   log.scrollTop = log.scrollHeight;
